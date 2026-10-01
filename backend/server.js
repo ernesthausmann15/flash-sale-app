@@ -3,6 +3,9 @@ import pkg from "pg";
 const { Pool } = pkg;
 import cors from "cors";
 import dotenv from "dotenv";
+import OpenAI from "openai";
+import { zodResponseFormat } from "openai/helpers/zod";
+import { z } from "zod";
 
 dotenv.config();
 
@@ -116,7 +119,7 @@ app.post("/api/purchases", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const productQuery = `SELECT stock FROM products WHERE id = $1 FOR UPDATE`;
+    const productQuery = `SELECT stock, price FROM products WHERE id = $1 FOR UPDATE`;
     const productResult = await client.query(productQuery, [productId]);
 
     if (productResult.rows.length === 0) {
@@ -137,7 +140,9 @@ app.post("/api/purchases", async (req, res) => {
     }
 
     const newStock = product.stock - quantity;
-    const totalPrice = product.price * quantity;
+    // NUMERIC arrives from node-pg as a string. Multiply the number so the
+    // order row stores 120.00, not a concatenation.
+    const totalPrice = Number(product.price) * quantity;
 
     const updateStockQuery = `UPDATE products SET stock = $1 WHERE id = $2 RETURNING stock`;
     const updateResult = await client.query(updateStockQuery, [
@@ -222,6 +227,89 @@ app.get("/api/stats/product/:id", async (req, res) => {
   }
 });
 
+// The form sends this shape, and OpenAI must return the same three fields
+// the products table stores. stock is an integer because the column is INT.
+const ProductCommandSchema = z.object({
+  name: z.string(),
+  price: z.number(),
+  stock: z.number().int(),
+});
+
+/**
+ * Natural-language inventory command.
+ * Request:  { commandText: string }
+ * Response: { success: true, extracted: { name, price, stock }, dbRow }
+ *           or { success: false, error }
+ *
+ * openai 7 moved structured parsing off beta.chat and onto
+ * chat.completions.parse. zodResponseFormat still builds the JSON schema.
+ */
+app.post("/api/add-product", async (req, res) => {
+  const commandText = req.body?.commandText;
+
+  if (typeof commandText !== "string" || commandText.trim() === "") {
+    return res
+      .status(400)
+      .json({ success: false, error: "commandText is required" });
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    return res
+      .status(500)
+      .json({ success: false, error: "OPENAI_API_KEY is missing" });
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const completion = await openai.chat.completions.parse({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an inventory assistant. Extract the product name, unit price, and stock quantity from the manager statement.",
+        },
+        { role: "user", content: commandText.trim() },
+      ],
+      response_format: zodResponseFormat(ProductCommandSchema, "product"),
+    });
+
+    const extracted = completion.choices[0]?.message.parsed;
+    if (!extracted) {
+      return res.status(422).json({
+        success: false,
+        error: "The model did not return a product.",
+      });
+    }
+
+    const name = extracted.name.trim();
+    const price = extracted.price;
+    const stock = extracted.stock;
+    if (!name || !Number.isFinite(price) || price <= 0 || stock < 0) {
+      return res.status(422).json({
+        success: false,
+        error: "Extracted product was incomplete.",
+      });
+    }
+
+    const inserted = await pool.query(
+      `INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *`,
+      [name, price, stock],
+    );
+
+    res.json({
+      success: true,
+      extracted: { name, price, stock },
+      dbRow: inserted.rows[0],
+    });
+  } catch (err) {
+    const cause = err.cause?.message ? ` ${err.cause.message}` : "";
+    res.status(500).json({
+      success: false,
+      error: `${err.message}${cause}`,
+    });
+  }
+});
+
 // A browser visit to http://localhost:5000/ requests GET /. Without this
 // route Express has nothing to send and replies with its default "Cannot GET /".
 app.get("/", (req, res) => {
@@ -229,6 +317,7 @@ app.get("/", (req, res) => {
     message: "Flash sale API is running",
     endpoints: {
       products: "/api/products",
+      addProduct: "/api/add-product",
       purchases: "/api/purchases",
       orders: "/api/orders",
       stats: "/api/stats",
@@ -236,7 +325,7 @@ app.get("/", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   initDb();
