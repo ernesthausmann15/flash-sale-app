@@ -3,6 +3,9 @@ import pkg from "pg";
 const { Pool } = pkg;
 import cors from "cors";
 import dotenv from "dotenv";
+import OpenAI from "openai";
+import { zodResponseFormat } from "openai/helpers/zod";
+import { z } from "zod";
 
 dotenv.config();
 
@@ -18,17 +21,8 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
 });
 
-/**
- * Ensure the tables the purchase route writes actually exist.
- *
- * CREATE TABLE IF NOT EXISTS does nothing when a table of that name is already
- * there, even if its columns are from an older design. This database already
- * had an `orders` table of user_id / item_id / status, so the INSERT that
- * names product_id failed on every Buy click. We only replace that table when
- * it is empty, so a restart cannot throw away real orders.
- */
 async function initDb() {
-  const createProductsTable = `
+  const createTableQuery = `
     CREATE TABLE IF NOT EXISTS products (
       id SERIAL PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
@@ -41,40 +35,19 @@ async function initDb() {
   const createOrdersTable = `
     CREATE TABLE IF NOT EXISTS orders (
       id SERIAL PRIMARY KEY,
-      product_id INT NOT NULL REFERENCES products(id),
+      product_id INT REFERENCES products(id),
       quantity INT NOT NULL,
       price NUMERIC(10, 2) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
-
-  await pool.query(createProductsTable);
-
-  const columns = await pool.query(
-    `SELECT column_name
-     FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = 'orders'`,
-  );
-  const columnNames = columns.rows.map((row) => row.column_name);
-  const ordersExist = columnNames.length > 0;
-  const ordersMatchPurchaseRoute =
-    columnNames.includes("product_id") && columnNames.includes("price");
-
-  if (ordersExist && !ordersMatchPurchaseRoute) {
-    const count = await pool.query("SELECT COUNT(*)::int AS count FROM orders");
-    if (count.rows[0].count > 0) {
-      throw new Error(
-        "orders table is missing product_id/price and already has rows, so it was left unchanged",
-      );
-    }
-    await pool.query("DROP TABLE orders");
-    console.log(
-      "Dropped empty orders table whose columns did not match the purchase route",
-    );
+  try {
+    await pool.query(createTableQuery);
+    await pool.query(createOrdersTable);
+    console.log("Datbase tables 'products' and 'orders' created successfully");
+  } catch (err) {
+    console.error("Error creating tables:", err);
   }
-
-  await pool.query(createOrdersTable);
-  console.log("Database tables 'products' and 'orders' are ready");
 }
 
 app.get("/api/test-db", async (req, res) => {
@@ -167,8 +140,8 @@ app.post("/api/purchases", async (req, res) => {
     }
 
     const newStock = product.stock - quantity;
-    // node-pg returns NUMERIC as a string. Coerce before multiplying so the
-    // order stores 49.99, not a concatenated string.
+    // NUMERIC arrives from node-pg as a string. Multiply the number so the
+    // order row stores 120.00, not a concatenation.
     const totalPrice = Number(product.price) * quantity;
 
     const updateStockQuery = `UPDATE products SET stock = $1 WHERE id = $2 RETURNING stock`;
@@ -202,9 +175,7 @@ app.post("/api/purchases", async (req, res) => {
 
 app.get("/api/orders", async (req, res) => {
   try {
-    // The charged amount lives in orders.price. Alias it so the response
-    // still exposes the line total under a clear name.
-    const query = `SELECT orders.id AS order_id, orders.quantity, orders.price AS total_price, orders.created_at AS order_date, products.id AS product_id, products.name AS product_name, products.price AS unit_price FROM orders JOIN products ON orders.product_id = products.id ORDER BY orders.created_at DESC`;
+    const query = `SELECT orders.id AS order_id, orders.quantity, orders.total_price, orders.created_at AS order_date, products.id AS product_id, products.name AS product_name, products.price AS unit_price FROM orders JOIN products ON orders.product_id = products.id ORDER BY orders.created_at DESC`;
     const result = await pool.query(query);
     res.json({
       success: true,
@@ -256,15 +227,106 @@ app.get("/api/stats/product/:id", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 5000;
+// The form sends this shape, and OpenAI must return the same three fields
+// the products table stores. stock is an integer because the column is INT.
+const ProductCommandSchema = z.object({
+  name: z.string(),
+  price: z.number(),
+  stock: z.number().int(),
+});
 
-initDb()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
+/**
+ * Natural-language inventory command.
+ * Request:  { commandText: string }
+ * Response: { success: true, extracted: { name, price, stock }, dbRow }
+ *           or { success: false, error }
+ *
+ * openai 7 moved structured parsing off beta.chat and onto
+ * chat.completions.parse. zodResponseFormat still builds the JSON schema.
+ */
+app.post("/api/add-product", async (req, res) => {
+  const commandText = req.body?.commandText;
+
+  if (typeof commandText !== "string" || commandText.trim() === "") {
+    return res
+      .status(400)
+      .json({ success: false, error: "commandText is required" });
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    return res
+      .status(500)
+      .json({ success: false, error: "OPENAI_API_KEY is missing" });
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const completion = await openai.chat.completions.parse({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an inventory assistant. Extract the product name, unit price, and stock quantity from the manager statement.",
+        },
+        { role: "user", content: commandText.trim() },
+      ],
+      response_format: zodResponseFormat(ProductCommandSchema, "product"),
     });
-  })
-  .catch((err) => {
-    console.error("Database setup failed:", err);
-    process.exit(1);
+
+    const extracted = completion.choices[0]?.message.parsed;
+    if (!extracted) {
+      return res.status(422).json({
+        success: false,
+        error: "The model did not return a product.",
+      });
+    }
+
+    const name = extracted.name.trim();
+    const price = extracted.price;
+    const stock = extracted.stock;
+    if (!name || !Number.isFinite(price) || price <= 0 || stock < 0) {
+      return res.status(422).json({
+        success: false,
+        error: "Extracted product was incomplete.",
+      });
+    }
+
+    const inserted = await pool.query(
+      `INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *`,
+      [name, price, stock],
+    );
+
+    res.json({
+      success: true,
+      extracted: { name, price, stock },
+      dbRow: inserted.rows[0],
+    });
+  } catch (err) {
+    const cause = err.cause?.message ? ` ${err.cause.message}` : "";
+    res.status(500).json({
+      success: false,
+      error: `${err.message}${cause}`,
+    });
+  }
+});
+
+// A browser visit to http://localhost:5000/ requests GET /. Without this
+// route Express has nothing to send and replies with its default "Cannot GET /".
+app.get("/", (req, res) => {
+  res.json({
+    message: "Flash sale API is running",
+    endpoints: {
+      products: "/api/products",
+      addProduct: "/api/add-product",
+      purchases: "/api/purchases",
+      orders: "/api/orders",
+      stats: "/api/stats",
+    },
   });
+});
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  initDb();
+});

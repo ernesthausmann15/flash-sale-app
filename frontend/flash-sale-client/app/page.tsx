@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -15,11 +21,37 @@ import {
 } from "@/components/ui/card";
 
 /**
+ * The sentence the form sends, and the two objects the API sends back.
+ * extracted uses JavaScript numbers. dbRow.price is a string because
+ * PostgreSQL NUMERIC is returned that way by node-pg.
+ */
+type ExtractedProduct = {
+  name: string;
+  price: number;
+  stock: number;
+};
+
+type DbProductRow = {
+  id: number;
+  name: string;
+  price: string;
+  stock: number;
+  created_at: string;
+};
+
+type AddProductResponse = {
+  success: boolean;
+  extracted?: ExtractedProduct;
+  dbRow?: DbProductRow;
+  error?: string;
+};
+
+/**
  * Express flash-sale API.
  * Next.js also wants port 3000, so the API runs on 5000 and this page calls that host.
  * Set NEXT_PUBLIC_API_URL if the API moves again.
  */
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 /** How many units a single "Buy Now" click reserves. The API still enforces stock. */
 const PURCHASE_QUANTITY = 1;
@@ -75,7 +107,7 @@ function stockVariant(stock: number): "destructive" | "outline" | "secondary" {
   return "secondary";
 }
 
-export default function FlashSaleCatalog() {
+export default function FlashSaleInventoryManagerPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [catalogState, setCatalogState] = useState<
     "loading" | "ready" | "error"
@@ -90,6 +122,13 @@ export default function FlashSaleCatalog() {
   const inFlightIds = useRef<Set<number>>(new Set());
   const [purchasingIds, setPurchasingIds] = useState<Set<number>>(new Set());
   const [notices, setNotices] = useState<Record<number, PurchaseNotice>>({});
+  const [command, setCommand] = useState(
+    "Add 25 gaming monitors at 299.99 each",
+  );
+  const [commandPending, setCommandPending] = useState(false);
+  const [commandResult, setCommandResult] = useState<AddProductResponse | null>(
+    null,
+  );
 
   const loadProducts = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(`${API_BASE}/api/products`, {
@@ -133,6 +172,44 @@ export default function FlashSaleCatalog() {
     return () => controller.abort();
   }, [loadProducts]);
 
+  async function submitCommand(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const commandText = command.trim();
+    if (!commandText || commandPending) return;
+
+    setCommandPending(true);
+    setCommandResult(null);
+
+    try {
+      // Same host as the catalog. backend/.env sets PORT=5000, so the
+      // form must not call a hardcoded port 4000.
+      const response = await fetch(`${API_BASE}/api/add-product`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commandText }),
+      });
+      const data = (await response.json()) as AddProductResponse;
+      setCommandResult(data);
+
+      if (response.ok && data.success) {
+        const fresh = await loadProducts();
+        setProducts(fresh);
+        setCatalogState("ready");
+        setCatalogError(null);
+      }
+    } catch (error: unknown) {
+      setCommandResult({
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "The command never reached the API.",
+      });
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
   function syncPurchasing() {
     setPurchasingIds(new Set(inFlightIds.current));
   }
@@ -151,18 +228,22 @@ export default function FlashSaleCatalog() {
     });
 
     try {
-      const response = await fetch(`${API_BASE}/api/purchases`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productId: product.id,
-          quantity: PURCHASE_QUANTITY,
+      // Wrap your fetch and the 600ms timer together using Promise.all
+      const [response] = await Promise.all([
+        fetch(`${API_BASE}/api/purchases`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            productId: product.id,
+            quantity: PURCHASE_QUANTITY,
+          }),
         }),
-      });
+        new Promise((resolve) => setTimeout(resolve, 600)), // Minimum 600ms delay for the loader
+      ]);
 
-      const body = (await response.json().catch(() => null)) as
-        | PurchaseResponse
-        | null;
+      const body = (await response
+        .json()
+        .catch(() => null)) as PurchaseResponse | null;
       const message = body?.error ?? body?.message ?? "Purchase failed.";
       const soldOut = response.status === 400 && /out of stock/i.test(message);
 
@@ -232,7 +313,69 @@ export default function FlashSaleCatalog() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
+      <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Add with a sentence</CardTitle>
+            <CardDescription>
+              The form posts <span className="font-mono">commandText</span>. The
+              API replies with extracted numbers and the database row.
+            </CardDescription>
+          </CardHeader>
+          <form onSubmit={submitCommand}>
+            <CardContent className="flex flex-col gap-3">
+              <label
+                htmlFor="inventory-command"
+                className="text-xs font-medium tracking-wide text-muted-foreground uppercase"
+              >
+                Natural language command
+              </label>
+              <input
+                id="inventory-command"
+                type="text"
+                value={command}
+                onChange={(event) => setCommand(event.target.value)}
+                className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                placeholder="Add 10 mechanical keyboards at 120.00 each"
+              />
+            </CardContent>
+            <CardFooter className="flex flex-col items-stretch gap-3">
+              <Button
+                type="submit"
+                disabled={commandPending || !command.trim()}
+              >
+                {commandPending ? (
+                  <>
+                    <Loader2 className="animate-spin" />
+                    Reading the sentence
+                  </>
+                ) : (
+                  "Add to inventory"
+                )}
+              </Button>
+              {commandResult ? (
+                <div className="w-full">
+                  <p
+                    role="status"
+                    className={
+                      commandResult.success
+                        ? "text-sm text-foreground"
+                        : "text-sm text-destructive"
+                    }
+                  >
+                    {commandResult.success
+                      ? `Added ${commandResult.extracted?.name ?? "product"} at ${commandResult.extracted?.price ?? "—"} with stock ${commandResult.extracted?.stock ?? "—"}.`
+                      : commandResult.error}
+                  </p>
+                  <pre className="mt-2 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-xs text-foreground">
+                    {JSON.stringify(commandResult, null, 2)}
+                  </pre>
+                </div>
+              ) : null}
+            </CardFooter>
+          </form>
+        </Card>
+
         {catalogState === "loading" ? <CatalogSkeleton /> : null}
 
         {catalogState === "error" ? (
@@ -292,7 +435,8 @@ export default function FlashSaleCatalog() {
                         </p>
                       ) : (
                         <p className="text-sm text-muted-foreground">
-                          One unit per click. Sold-out replies stay on this card.
+                          One unit per click. Sold-out replies stay on this
+                          card.
                         </p>
                       )}
                     </CardContent>
