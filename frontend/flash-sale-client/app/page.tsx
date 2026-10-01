@@ -49,9 +49,9 @@ type AddProductResponse = {
 /**
  * Express flash-sale API.
  * Next.js also wants port 3000, so the API runs on 5000 and this page calls that host.
- * Set NEXT_PUBLIC_API_URL if the API moves again.
+ * Set NEXT_PUBLIC_BACKEND_URL if the API moves again.
  */
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:4000";
 
 /** How many units a single "Buy Now" click reserves. The API still enforces stock. */
 const PURCHASE_QUANTITY = 1;
