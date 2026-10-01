@@ -13,13 +13,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-});
+// If this is undefined, throw an error right away instead of falling back to localhost
+if (!process.env.DATABASE_URL) {
+  throw new Error("FATAL ERROR: DATABASE_URL environment variable is missing!");
+}
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function initDb() {
   const createTableQuery = `
@@ -323,6 +322,21 @@ app.get("/", (req, res) => {
       stats: "/api/stats",
     },
   });
+});
+
+// 1. Health check route to test Supabase connection live
+app.get("/health", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT NOW()");
+    res.json({
+      status: "success",
+      message: "Connected to Supabase successfully!",
+      databaseTime: result.rows[0].now,
+    });
+  } catch (err) {
+    console.error("Database connection error:", err);
+    res.status(500).json({ status: "error", message: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 4000;
