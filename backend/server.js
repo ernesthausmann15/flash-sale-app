@@ -18,17 +18,8 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
 });
 
-/**
- * Ensure the tables the purchase route writes actually exist.
- *
- * CREATE TABLE IF NOT EXISTS does nothing when a table of that name is already
- * there, even if its columns are from an older design. This database already
- * had an `orders` table of user_id / item_id / status, so the INSERT that
- * names product_id failed on every Buy click. We only replace that table when
- * it is empty, so a restart cannot throw away real orders.
- */
 async function initDb() {
-  const createProductsTable = `
+  const createTableQuery = `
     CREATE TABLE IF NOT EXISTS products (
       id SERIAL PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
@@ -41,40 +32,19 @@ async function initDb() {
   const createOrdersTable = `
     CREATE TABLE IF NOT EXISTS orders (
       id SERIAL PRIMARY KEY,
-      product_id INT NOT NULL REFERENCES products(id),
+      product_id INT REFERENCES products(id),
       quantity INT NOT NULL,
       price NUMERIC(10, 2) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
-
-  await pool.query(createProductsTable);
-
-  const columns = await pool.query(
-    `SELECT column_name
-     FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = 'orders'`,
-  );
-  const columnNames = columns.rows.map((row) => row.column_name);
-  const ordersExist = columnNames.length > 0;
-  const ordersMatchPurchaseRoute =
-    columnNames.includes("product_id") && columnNames.includes("price");
-
-  if (ordersExist && !ordersMatchPurchaseRoute) {
-    const count = await pool.query("SELECT COUNT(*)::int AS count FROM orders");
-    if (count.rows[0].count > 0) {
-      throw new Error(
-        "orders table is missing product_id/price and already has rows, so it was left unchanged",
-      );
-    }
-    await pool.query("DROP TABLE orders");
-    console.log(
-      "Dropped empty orders table whose columns did not match the purchase route",
-    );
+  try {
+    await pool.query(createTableQuery);
+    await pool.query(createOrdersTable);
+    console.log("Datbase tables 'products' and 'orders' created successfully");
+  } catch (err) {
+    console.error("Error creating tables:", err);
   }
-
-  await pool.query(createOrdersTable);
-  console.log("Database tables 'products' and 'orders' are ready");
 }
 
 app.get("/api/test-db", async (req, res) => {
@@ -146,7 +116,7 @@ app.post("/api/purchases", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const productQuery = `SELECT stock, price FROM products WHERE id = $1 FOR UPDATE`;
+    const productQuery = `SELECT stock FROM products WHERE id = $1 FOR UPDATE`;
     const productResult = await client.query(productQuery, [productId]);
 
     if (productResult.rows.length === 0) {
@@ -167,9 +137,7 @@ app.post("/api/purchases", async (req, res) => {
     }
 
     const newStock = product.stock - quantity;
-    // node-pg returns NUMERIC as a string. Coerce before multiplying so the
-    // order stores 49.99, not a concatenated string.
-    const totalPrice = Number(product.price) * quantity;
+    const totalPrice = product.price * quantity;
 
     const updateStockQuery = `UPDATE products SET stock = $1 WHERE id = $2 RETURNING stock`;
     const updateResult = await client.query(updateStockQuery, [
@@ -202,9 +170,7 @@ app.post("/api/purchases", async (req, res) => {
 
 app.get("/api/orders", async (req, res) => {
   try {
-    // The charged amount lives in orders.price. Alias it so the response
-    // still exposes the line total under a clear name.
-    const query = `SELECT orders.id AS order_id, orders.quantity, orders.price AS total_price, orders.created_at AS order_date, products.id AS product_id, products.name AS product_name, products.price AS unit_price FROM orders JOIN products ON orders.product_id = products.id ORDER BY orders.created_at DESC`;
+    const query = `SELECT orders.id AS order_id, orders.quantity, orders.total_price, orders.created_at AS order_date, products.id AS product_id, products.name AS product_name, products.price AS unit_price FROM orders JOIN products ON orders.product_id = products.id ORDER BY orders.created_at DESC`;
     const result = await pool.query(query);
     res.json({
       success: true,
@@ -256,15 +222,22 @@ app.get("/api/stats/product/:id", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 5000;
-
-initDb()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error("Database setup failed:", err);
-    process.exit(1);
+// A browser visit to http://localhost:5000/ requests GET /. Without this
+// route Express has nothing to send and replies with its default "Cannot GET /".
+app.get("/", (req, res) => {
+  res.json({
+    message: "Flash sale API is running",
+    endpoints: {
+      products: "/api/products",
+      purchases: "/api/purchases",
+      orders: "/api/orders",
+      stats: "/api/stats",
+    },
   });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  initDb();
+});
