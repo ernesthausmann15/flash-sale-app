@@ -231,8 +231,7 @@ export default function FlashSaleInventoryManagerPage() {
   }, [inFlightIds.current, setPurchasingIds]);
 
   const submitInventoryCommand = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
+    async () => {
       const commandText = command.trim();
       if (!commandText || commandPending) return;
 
@@ -389,8 +388,9 @@ export default function FlashSaleInventoryManagerPage() {
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
               <Button 
-                onClick={() => void loadProducts()}
+                onClick={() => void submitInventoryCommand()}
                 disabled={!command.trim() || commandPending}
+                aria-busy={commandPending}
                 className="w-full"
               >
                 {commandPending ? "Processing..." : "Run Command"}
