@@ -122,6 +122,28 @@ export default function FlashSaleInventoryManagerPage() {
   const inFlightIds = useRef<Set<number>>(new Set());
   const [purchasingIds, setPurchasingIds] = useState<Set<number>>(new Set());
   const [notices, setNotices] = useState<Record<number, PurchaseNotice>>({});
+  const [purchaseHistory, setPurchaseHistory] = useState<
+    {
+      flashSaleId: number;
+      quantity: number;
+      success: boolean;
+      message: string;
+      error: string;
+    }[]
+  >([]);
+  const [flashSalePurchaseResult, setFlashSalePurchaseResult] =
+    useState<PurchaseResponse | null>(null);
+  const [flashSalePurchasePending, setFlashSalePurchasePending] =
+    useState(false);
+  const [flashSalePurchaseError, setFlashSalePurchaseError] = useState<
+    string | null
+  >(null);
+  const [flashSalePurchaseMessage, setFlashSalePurchaseMessage] = useState<
+    string | null
+  >(null);
+  const [flashSalePurchaseSuccess, setFlashSalePurchaseSuccess] = useState<
+    boolean | null
+  >(null);
   const [command, setCommand] = useState(
     "Add 25 gaming monitors at 299.99 each",
   );
@@ -148,350 +170,309 @@ export default function FlashSaleInventoryManagerPage() {
     }));
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
+  const inventoryCommand = useCallback(async (commandText: string) => {
+    const response = await fetch(`${API_BASE}/api/add-product`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commandText }),
+    });
+    const data = (await response.json()) as AddProductResponse;
+    return data;
+  }, []);
 
-    loadProducts(controller.signal)
-      .then((nextProducts) => {
-        setProducts(nextProducts);
-        setCatalogState("ready");
-        setCatalogError(null);
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-        setCatalogState("error");
-        setCatalogError(
-          error instanceof Error
-            ? error.message
-            : "Could not reach the flash-sale API.",
-        );
-      });
-
-    return () => controller.abort();
-  }, [loadProducts]);
-
-  async function submitCommand(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const commandText = command.trim();
-    if (!commandText || commandPending) return;
-
-    setCommandPending(true);
-    setCommandResult(null);
-
-    try {
-      // Same host as the catalog. backend/.env sets PORT=5000, so the
-      // form must not call a hardcoded port 4000.
-      const response = await fetch(`${API_BASE}/api/add-product`, {
+  const purchase = useCallback(
+    async (flashSaleId: number, quantity: number) => {
+      const response = await fetch(`${API_BASE}/api/purchase-flash-sale`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ commandText }),
+        body: JSON.stringify({ flashSaleId, quantity }),
       });
-      const data = (await response.json()) as AddProductResponse;
-      setCommandResult(data);
+      const data = (await response.json()) as PurchaseResponse;
+      return data;
+    },
+    [],
+  );
 
-      if (response.ok && data.success) {
+  const showInventoryCommandResult = useCallback(async () => {
+    try {
+      const result = await inventoryCommand(command);
+      if (result.success) {
         const fresh = await loadProducts();
         setProducts(fresh);
         setCatalogState("ready");
         setCatalogError(null);
       }
+      setCommandResult(result);
     } catch (error: unknown) {
-      setCommandResult({
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "The command never reached the API.",
-      });
-    } finally {
-      setCommandPending(false);
+      setCatalogError(
+        error instanceof Error
+          ? error.message
+          : "The command never reached the API.",
+      );
     }
-  }
+  }, [
+    command,
+    loadProducts,
+    setProducts,
+    setCatalogState,
+    setCatalogError,
+    setCommandResult,
+  ]);
 
-  function syncPurchasing() {
+  const syncFlashSalePurchasing = useCallback(
+    async (flashSaleId: number) => {
+      setPurchasingIds(new Set([...purchasingIds, flashSaleId]));
+    },
+    [purchasingIds, setPurchasingIds],
+  );
+
+  const syncPurchasing = useCallback(async () => {
     setPurchasingIds(new Set(inFlightIds.current));
-  }
+  }, [inFlightIds.current, setPurchasingIds]);
 
-  async function buyNow(product: Product) {
-    if (product.stock <= 0 || inFlightIds.current.has(product.id)) {
-      return;
-    }
+  const submitInventoryCommand = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const commandText = command.trim();
+      if (!commandText || commandPending) return;
 
-    inFlightIds.current.add(product.id);
-    syncPurchasing();
-    setNotices((current) => {
-      const next = { ...current };
-      delete next[product.id];
-      return next;
-    });
+      setCommandPending(true);
+      setCommandResult(null);
 
-    try {
-      // Wrap your fetch and the 600ms timer together using Promise.all
-      const [response] = await Promise.all([
-        fetch(`${API_BASE}/api/purchases`, {
+      try {
+        // Same host as the catalog. backend/.env sets PORT=5000, so the
+        // form must not call a hardcoded port 4000.
+        const response = await fetch(`${API_BASE}/api/add-product`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            productId: product.id,
-            quantity: PURCHASE_QUANTITY,
-          }),
-        }),
-        new Promise((resolve) => setTimeout(resolve, 600)), // Minimum 600ms delay for the loader
+          body: JSON.stringify({ commandText }),
+        });
+        const data = (await response.json()) as AddProductResponse;
+        setCommandResult(data);
+
+        if (response.ok && data.success) {
+          const fresh = await loadProducts();
+          setProducts(fresh);
+          setCatalogState("ready");
+          setCatalogError(null);
+        }
+      } catch (error: unknown) {
+        setCommandResult({
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "The command never reached the API.",
+        });
+      } finally {
+        setCommandPending(false);
+      }
+    },
+    [
+      commandPending,
+      command,
+      loadProducts,
+      setProducts,
+      setCatalogState,
+      setCatalogError,
+      setCommandResult,
+    ],
+  );
+
+  const submitFlashSalePurchase = useCallback(
+    async (flashSaleId: number, quantity: number) => {
+      if (!flashSaleId || flashSalePurchasePending) return;
+
+      setFlashSalePurchaseResult(null);
+      setPurchaseHistory([
+        ...purchaseHistory,
+        { flashSaleId, quantity, success: false, message: "", error: "" },
       ]);
 
-      const body = (await response
-        .json()
-        .catch(() => null)) as PurchaseResponse | null;
-      const message = body?.error ?? body?.message ?? "Purchase failed.";
-      const soldOut = response.status === 400 && /out of stock/i.test(message);
-
-      if (!response.ok || !body?.success) {
-        setNotices((current) => ({
-          ...current,
-          [product.id]: {
-            tone: soldOut ? "sold-out" : "error",
-            message,
+      try {
+        const response = await fetch(`${API_BASE}/api/purchase-flash-sale`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flashSaleId, quantity }),
+        });
+        const data = (await response.json()) as PurchaseResponse;
+        setPurchaseHistory([
+          ...purchaseHistory,
+          {
+            flashSaleId,
+            quantity,
+            success: data.success,
+            message: data.message ?? "",
+            error: data.error ?? "",
           },
-        }));
-        // Another shopper may have taken the last units. Reload so the badge matches the database.
-        const fresh = await loadProducts();
-        setProducts(fresh);
-        return;
+        ]);
+
+        if (response.ok && data.success) {
+          const fresh = await loadProducts();
+          setProducts(fresh);
+          setCatalogState("ready");
+          setCatalogError(null);
+        }
+      } catch (error: unknown) {
+        setPurchaseHistory([
+          ...purchaseHistory,
+          {
+            flashSaleId,
+            quantity,
+            success: false,
+            message: "",
+            error:
+              error instanceof Error
+                ? error.message
+                : "The purchase request never reached the server.",
+          },
+        ]);
+        setFlashSalePurchaseError(
+          error instanceof Error
+            ? error.message
+            : "The purchase request never reached the server.",
+        );
+        setFlashSalePurchaseMessage(null);
+        setFlashSalePurchaseSuccess(false);
+      } finally {
+        setFlashSalePurchasePending(false);
       }
-
-      const nextStock = body.product?.stock;
-      setProducts((current) =>
-        current.map((item) =>
-          item.id === product.id
-            ? {
-                ...item,
-                stock:
-                  typeof nextStock === "number"
-                    ? nextStock
-                    : Math.max(0, item.stock - PURCHASE_QUANTITY),
-              }
-            : item,
-        ),
-      );
-      setNotices((current) => ({
-        ...current,
-        [product.id]: {
-          tone: "success",
-          message: body.message ?? "Purchase successful.",
-        },
-      }));
-    } catch {
-      setNotices((current) => ({
-        ...current,
-        [product.id]: {
-          tone: "error",
-          message: "The purchase request never reached the server.",
-        },
-      }));
-    } finally {
-      inFlightIds.current.delete(product.id);
-      syncPurchasing();
-    }
-  }
-
-  return (
-    <div className="flex flex-1 flex-col bg-background text-foreground">
-      <header className="border-b border-border">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-8 sm:px-6">
-          <p className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
-            Live catalog
-          </p>
-          <h1 className="font-heading text-3xl font-semibold tracking-tight">
-            Flash sale
-          </h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Stock is reserved on the server, one purchase at a time. The button
-            locks the moment you click so a double-click cannot send two orders.
-          </p>
-        </div>
-      </header>
-
-      <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Add with a sentence</CardTitle>
-            <CardDescription>
-              The form posts <span className="font-mono">commandText</span>. The
-              API replies with extracted numbers and the database row.
-            </CardDescription>
-          </CardHeader>
-          <form onSubmit={submitCommand}>
-            <CardContent className="flex flex-col gap-3">
-              <label
-                htmlFor="inventory-command"
-                className="text-xs font-medium tracking-wide text-muted-foreground uppercase"
-              >
-                Natural language command
-              </label>
-              <input
-                id="inventory-command"
-                type="text"
-                value={command}
-                onChange={(event) => setCommand(event.target.value)}
-                className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                placeholder="Add 10 mechanical keyboards at 120.00 each"
-              />
-            </CardContent>
-            <CardFooter className="flex flex-col items-stretch gap-3">
-              <Button
-                type="submit"
-                disabled={commandPending || !command.trim()}
-              >
-                {commandPending ? (
-                  <>
-                    <Loader2 className="animate-spin" />
-                    Reading the sentence
-                  </>
-                ) : (
-                  "Add to inventory"
-                )}
-              </Button>
-              {commandResult ? (
-                <div className="w-full">
-                  <p
-                    role="status"
-                    className={
-                      commandResult.success
-                        ? "text-sm text-foreground"
-                        : "text-sm text-destructive"
-                    }
-                  >
-                    {commandResult.success
-                      ? `Added ${commandResult.extracted?.name ?? "product"} at ${commandResult.extracted?.price ?? "—"} with stock ${commandResult.extracted?.stock ?? "—"}.`
-                      : commandResult.error}
-                  </p>
-                  <pre className="mt-2 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-xs text-foreground">
-                    {JSON.stringify(commandResult, null, 2)}
-                  </pre>
-                </div>
-              ) : null}
-            </CardFooter>
-          </form>
-        </Card>
-
-        {catalogState === "loading" ? <CatalogSkeleton /> : null}
-
-        {catalogState === "error" ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>Catalog unavailable</CardTitle>
-              <CardDescription>
-                {catalogError} The page is calling {API_BASE}/api/products.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        ) : null}
-
-        {catalogState === "ready" && products.length === 0 ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>No products yet</CardTitle>
-              <CardDescription>
-                The sale opens once products are added to the catalog.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        ) : null}
-
-        {catalogState === "ready" && products.length > 0 ? (
-          <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {products.map((product) => {
-              const purchasing = purchasingIds.has(product.id);
-              const soldOut = product.stock <= 0;
-              const notice = notices[product.id];
-
-              return (
-                <li key={product.id}>
-                  <Card className="h-full">
-                    <CardHeader>
-                      <CardTitle>{product.name}</CardTitle>
-                      <CardDescription className="font-mono text-base text-foreground">
-                        {formatPrice(product.price)}
-                      </CardDescription>
-                      <div className="pt-2">
-                        <Badge variant={stockVariant(product.stock)}>
-                          {stockLabel(product.stock)}
-                        </Badge>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      {notice ? (
-                        <p
-                          role="status"
-                          className={
-                            notice.tone === "success"
-                              ? "text-sm text-foreground"
-                              : "text-sm text-destructive"
-                          }
-                        >
-                          {notice.message}
-                        </p>
-                      ) : (
-                        <p className="text-sm text-muted-foreground">
-                          One unit per click. Sold-out replies stay on this
-                          card.
-                        </p>
-                      )}
-                    </CardContent>
-                    <CardFooter>
-                      <Button
-                        type="button"
-                        className="w-full"
-                        disabled={soldOut || purchasing}
-                        aria-busy={purchasing}
-                        onClick={() => {
-                          void buyNow(product);
-                        }}
-                      >
-                        {purchasing ? (
-                          <>
-                            <Loader2 className="animate-spin" />
-                            Reserving
-                          </>
-                        ) : soldOut ? (
-                          "Sold out"
-                        ) : (
-                          "Buy now"
-                        )}
-                      </Button>
-                    </CardFooter>
-                  </Card>
-                </li>
-              );
-            })}
-          </ul>
-        ) : null}
-      </main>
-    </div>
+    },
+    [
+      flashSalePurchasePending,
+      purchaseHistory,
+      loadProducts,
+      setProducts,
+      setCatalogState,
+      setCatalogError,
+      setPurchaseHistory,
+      setFlashSalePurchaseError,
+      setFlashSalePurchaseMessage,
+      setFlashSalePurchaseSuccess,
+    ],
   );
-}
-
-function CatalogSkeleton() {
   return (
-    <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      {Array.from({ length: 3 }, (_, index) => (
-        <li key={index}>
+    <main className="min-h-screen bg-background p-6 md:p-10">
+      <div className="mx-auto max-w-6xl space-y-8">
+        
+        {/* Header */}
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Flash Sale Command Center</h1>
+          <p className="text-muted-foreground">Manage your live inventory and process flash sale checkouts.</p>
+        </div>
+
+        {/* Grid Layout for Cards */}
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          
+          {/* Card 1: Flash Sale Purchase Form */}
           <Card>
             <CardHeader>
-              <div className="h-5 w-2/3 animate-pulse rounded-md bg-muted" />
-              <div className="h-4 w-1/3 animate-pulse rounded-md bg-muted" />
+              <CardTitle>Instant Purchase</CardTitle>
+              <CardDescription>Secure your spot in the active flash sale.</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="h-4 w-full animate-pulse rounded-md bg-muted" />
-            </CardContent>
-            <CardFooter>
-              <div className="h-8 w-full animate-pulse rounded-lg bg-muted" />
-            </CardFooter>
+              </CardContent>
           </Card>
-        </li>
-      ))}
+
+          {/* Card 2: Inventory Command Tool */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Inventory Command</CardTitle>
+              <CardDescription>Quick-add products using natural language commands.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <input 
+                type="text" 
+                value={command} 
+                onChange={(e) => setCommand(e.target.value)} 
+                placeholder="e.g., Add 50 mechanical keyboards for $99"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+              <Button 
+                onClick={showInventoryCommandResult}
+                disabled={commandPending}
+                className="w-full"
+              >
+                {commandPending ? "Processing..." : "Run Command"}
+              </Button>
+            </CardContent>
+          </Card>
+
+        </div>
+
+        {/* Card 3: Product Catalog Full-Width Section */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Live Product Catalog</CardTitle>
+            <CardDescription>Currently available inventory synced from Supabase.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="border rounded-md p-4 bg-muted/20 min-h-[150px] flex items-center justify-center text-muted-foreground">
+              [Product catalog grid will display here]
+            </div>
+          </CardContent>
+        </Card>
+
+      </div>
+    </main>
+  );
+};
+
+function PurchaseHistory({
+  purchaseHistory,
+  submitFlashSalePurchase,
+}: {
+  purchaseHistory: {
+    flashSaleId: number;
+    quantity: number;
+    success: boolean;
+    message: string;
+    error: string;
+  }[];
+  submitFlashSalePurchase: (flashSaleId: number) => Promise<void>;
+}) {
+  return (
+    <ul className="space-y-4">
+      {purchaseHistory.map(
+        (purchase: {
+          flashSaleId: number;
+          quantity: number;
+          success: boolean;
+          message: string;
+          error: string;
+        }) => (
+          <li key={purchase.flashSaleId}>
+            <Card className="h-full">
+              <CardHeader>
+                <CardTitle>{purchase.flashSaleId}</CardTitle>
+                <CardDescription className="font-mono text-base text-foreground">
+                  {purchase.quantity}
+                </CardDescription>
+                <div className="pt-2">
+                  <Badge variant={purchase.success ? "default" : "destructive"}>
+                    {purchase.success ? "Success" : "Error"}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent>{purchase.message}</CardContent>
+              <CardFooter>
+                <Button
+                  type="button"
+                  className="w-full"
+                  disabled={purchase.success}
+                  aria-busy={purchase.success}
+                  onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                    e.preventDefault();
+                    void submitFlashSalePurchase(purchase.flashSaleId);
+                  }}
+                >
+                  {purchase.success ? "Reserve again" : "Reserve"}
+                </Button>
+              </CardFooter>
+            </Card>
+          </li>
+        ),
+      )}
     </ul>
   );
 }
