@@ -58,8 +58,9 @@ const pool = new Pool({
 // Define the exact schema the AI must extract
 const ProductSchema = z.object({
   name: z.string(),
-  price: z.number(),
-  stock: z.number(),
+  description: z.string(),
+  base_price: z.number(),
+  stock: z.number().int(),
 });
 
 async function processManagerCommand(commandText) {
@@ -74,7 +75,7 @@ async function processManagerCommand(commandText) {
         {
           role: "system",
           content:
-            "You are an inventory assistant. Extract the product name, unit price, and stock quantity from the manager statement.",
+            "You are an inventory assistant. Extract the product name, description, base price, and stock quantity from the manager statement.",
         },
         { role: "user", content: commandText },
       ],
@@ -86,8 +87,8 @@ async function processManagerCommand(commandText) {
     console.log(" AI Extracted Data:", product);
 
     // Securely write the parsed data into PostgreSQL
-    const query = `INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *;`;
-    const values = [product.name, product.price, product.stock];
+    const query = `INSERT INTO products (name, description, base_price, stock) VALUES ($1, $2, $3, $4) RETURNING *;`;
+    const values = [product.name, product.description, product.base_price, product.stock];
 
     const result = await pool.query(query, values);
     console.log(" Successfully written to PostgreSQL database:");
