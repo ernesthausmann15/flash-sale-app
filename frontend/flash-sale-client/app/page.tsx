@@ -179,7 +179,7 @@ export default function FlashSaleInventoryManagerPage() {
 
   useEffect(() => {
     void loadProducts();
-  }, []);
+  }, [loadProducts]);
 
 
   const inventoryCommand = useCallback(async (commandText: string) => {
