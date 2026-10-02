@@ -389,8 +389,8 @@ export default function FlashSaleInventoryManagerPage() {
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
               <Button 
-                onClick={showInventoryCommandResult}
-                disabled={commandPending}
+                onClick={() => void loadProducts()}
+                disabled={!command.trim() || commandPending}
                 className="w-full"
               >
                 {commandPending ? "Processing..." : "Run Command"}
@@ -409,6 +409,13 @@ export default function FlashSaleInventoryManagerPage() {
           <CardContent>
             <div className="border rounded-md p-4 bg-muted/20 min-h-[150px] flex items-center justify-center text-muted-foreground">
               [Product catalog grid will display here]
+              {products.map((product) => (
+                <div key={product.id}>
+                  <h3>{product.name}</h3>
+                  <p>{product.price}</p>
+                  <p>{product.stock}</p>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
