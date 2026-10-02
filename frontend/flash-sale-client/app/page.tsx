@@ -153,9 +153,9 @@ export default function FlashSaleInventoryManagerPage() {
     null,
   );
 
-  const loadProducts = useCallback(async (signal?: AbortSignal) => {
+  const loadProducts = useCallback(async () => {
     const response = await fetch(`${API_BASE}/api/products`, {
-      signal,
+      signal: AbortSignal.timeout(10000),
       cache: "no-store",
     });
     const body = (await response.json()) as ProductsResponse;
@@ -164,11 +164,20 @@ export default function FlashSaleInventoryManagerPage() {
       throw new Error(body.error ?? "Could not load the catalog.");
     }
 
-    return body.products.map((product) => ({
+    const products = body.products.map((product) => ({
       ...product,
       product_id: Number(product.product_id),
       stock: Number(product.stock),
+      base_price: Number(product.base_price),
+      name: product.name,
     }));
+    setProducts(products);
+    setCatalogState("ready");
+    setCatalogError(null);
+
+    useEffect(() => {
+      void loadProducts();
+    }, []);
   }, []);
 
   const inventoryCommand = useCallback(async (commandText: string) => {
@@ -198,10 +207,7 @@ export default function FlashSaleInventoryManagerPage() {
     try {
       const result = await inventoryCommand(command);
       if (result.success) {
-        const fresh = await loadProducts();
-        setProducts(fresh);
-        setCatalogState("ready");
-        setCatalogError(null);
+        void loadProducts();
       }
       setCommandResult(result);
     } catch (error: unknown) {
@@ -250,10 +256,7 @@ export default function FlashSaleInventoryManagerPage() {
       setCommandResult(data);
 
       if (response.ok && data.success) {
-        const fresh = await loadProducts();
-        setProducts(fresh);
-        setCatalogState("ready");
-        setCatalogError(null);
+        void loadProducts();
       }
     } catch (error: unknown) {
       setCommandResult({
@@ -306,9 +309,6 @@ export default function FlashSaleInventoryManagerPage() {
 
         if (response.ok && data.success) {
           const fresh = await loadProducts();
-          setProducts(fresh);
-          setCatalogState("ready");
-          setCatalogError(null);
         }
       } catch (error: unknown) {
         setPurchaseHistory([
