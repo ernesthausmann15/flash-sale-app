@@ -61,9 +61,9 @@ const PURCHASE_QUANTITY = 1;
 const LOW_STOCK_THRESHOLD = 5;
 
 type Product = {
-  id: number;
+  product_id: number;
   name: string;
-  price: string | number;
+  base_price: string | number;
   stock: number;
 };
 
@@ -87,7 +87,7 @@ type PurchaseNotice = {
   message: string;
 };
 
-function formatPrice(price: Product["price"]) {
+function formatPrice(price: Product["base_price"]) {
   const amount = typeof price === "number" ? price : Number(price);
   if (Number.isNaN(amount)) return "—";
   return new Intl.NumberFormat("en-US", {
@@ -166,7 +166,7 @@ export default function FlashSaleInventoryManagerPage() {
 
     return body.products.map((product) => ({
       ...product,
-      id: Number(product.id),
+      product_id: Number(product.product_id),
       stock: Number(product.stock),
     }));
   }, []);
@@ -425,14 +425,14 @@ export default function FlashSaleInventoryManagerPage() {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {products.map((product) => (
-                  <CardProduct key={product.id}>
+                  <CardProduct key={product.product_id}>
                     {/* Product Title and Price */}
                     <div className="flex justify-between items-start">
                       <h3 className="font-semibold text-base">
                         {product.name}
                       </h3>
                       <span className="font-bold text-primary text-lg">
-                        ${product.price}
+                        {formatPrice(product.base_price)}
                       </span>
                     </div>
 
@@ -446,7 +446,7 @@ export default function FlashSaleInventoryManagerPage() {
                       <span className="bg-muted px-2 py-1 rounded font-medium">
                         Stock: {product.stock}
                       </span>
-                      <span>ID: {product.id}</span>
+                      <span>ID: {product.product_id}</span>
                     </div>
                   </CardProduct>
                 ))}
