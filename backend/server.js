@@ -21,11 +21,12 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function initDb() {
-  const createTableQuery = `
+  const createProductsTable = `
     CREATE TABLE IF NOT EXISTS products (
-      id SERIAL PRIMARY KEY,
+      product_id SERIAL PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
-      price NUMERIC(10, 2) NOT NULL,
+      description TEXT,
+      base_price NUMERIC(10, 2) NOT NULL,
       stock INT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -33,17 +34,48 @@ async function initDb() {
 
   const createOrdersTable = `
     CREATE TABLE IF NOT EXISTS orders (
-      id SERIAL PRIMARY KEY,
-      product_id INT REFERENCES products(id),
+      order_id SERIAL PRIMARY KEY,
+      flash_sale_id INT NOT NULL REFERENCES flash_sales(flash_sale_id),
+      customer_email VARCHAR(255) NOT NULL,
       quantity INT NOT NULL,
-      price NUMERIC(10, 2) NOT NULL,
+      total_paid NUMERIC(10, 2) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
+
+
+  const createFlashSalesTable = `
+    CREATE TABLE IF NOT EXISTS flash_sales (
+      flash_sale_id SERIAL PRIMARY KEY,
+      product_id INT NOT NULL REFERENCES products(product_id),
+      discount_price NUMERIC(10, 2) NOT NULL,
+      stock_limit INT NOT NULL,
+      sold_count INT NOT NULL DEFAULT 0,
+      status VARCHAR(50) NOT NULL DEFAULT 'active',
+      start_time TIMESTAMP NOT NULL,
+      end_time TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const ai_management_logs_table = `
+    CREATE TABLE IF NOT EXISTS ai_management_logs (
+      log_id SERIAL PRIMARY KEY,
+      flash_sale_id INT NOT NULL REFERENCES flash_sales(flash_sale_id),
+      action_type VARCHAR(100) NOT NULL,
+      ai_payload JSONB NOT NULL,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+
   try {
-    await pool.query(createTableQuery);
+    await pool.query(createProductsTable);
     await pool.query(createOrdersTable);
-    console.log("Datbase tables 'products' and 'orders' created successfully");
+    await pool.query(createFlashSalesTable);
+    await pool.query(ai_management_logs_table);
+    console.log("Datbase tables 'products', 'orders', 'flash_sales' and 'ai_management_logs' created successfully");
   } catch (err) {
     console.error("Error creating tables:", err);
   }
@@ -77,12 +109,12 @@ app.get("/api/products", async (req, res) => {
 });
 
 app.post("/api/products", async (req, res) => {
-  const { name, price, stock } = req.body;
+  const { name, description, base_price, stock } = req.body;
 
   if (!name || typeof name !== "string" || name.trim() === "") {
     return res.status(400).json({ success: false, error: "Name is required" });
   }
-  if (!price || typeof price !== "number" || price <= 0) {
+  if (!price || typeof price !== "number" || base_price <= 0) {
     return res.status(400).json({ success: false, error: "Price is required" });
   }
   if (!stock || typeof stock !== "number" || stock < 0) {
@@ -90,8 +122,8 @@ app.post("/api/products", async (req, res) => {
   }
 
   try {
-    const query = `INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *`;
-    const values = [name, price, stock];
+    const query = `INSERT INTO products (name, description, base_price, stock) VALUES ($1, $2, $3, $4) RETURNING *`;
+    const values = [name, description, base_price, stock];
     const result = await pool.query(query, values);
     res.json({ success: true, product: result.rows[0] });
   } catch (err) {
@@ -118,7 +150,7 @@ app.post("/api/purchases", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const productQuery = `SELECT stock, price FROM products WHERE id = $1 FOR UPDATE`;
+    const productQuery = `SELECT stock, base_price FROM products WHERE id = $1 FOR UPDATE`;
     const productResult = await client.query(productQuery, [productId]);
 
     if (productResult.rows.length === 0) {
@@ -149,7 +181,7 @@ app.post("/api/purchases", async (req, res) => {
       productId,
     ]);
 
-    const orderQuery = `INSERT INTO orders (product_id, quantity, price) VALUES ($1, $2, $3) RETURNING *`;
+    const orderQuery = `INSERT INTO orders (product_id, quantity, total_paid) VALUES ($1, $2, $3) RETURNING *`;
     const orderResult = await client.query(orderQuery, [
       productId,
       quantity,
@@ -174,7 +206,7 @@ app.post("/api/purchases", async (req, res) => {
 
 app.get("/api/orders", async (req, res) => {
   try {
-    const query = `SELECT orders.id AS order_id, orders.quantity, orders.total_price, orders.created_at AS order_date, products.id AS product_id, products.name AS product_name, products.price AS unit_price FROM orders JOIN products ON orders.product_id = products.id ORDER BY orders.created_at DESC`;
+    const query = `SELECT o.order_id, o.quantity, o.total_paid, o.created_at AS order_date, f.flash_sale_id, f.discount_price, f.stock_limit, f.sold_count, f.status, f.start_time, f.end_time FROM orders o JOIN flash_sales f ON o.flash_sale_id = f.flash_sale_id ORDER BY o.created_at DESC`;
     const result = await pool.query(query);
     res.json({
       success: true,
@@ -291,8 +323,8 @@ app.post("/api/add-product", async (req, res) => {
     }
 
     const inserted = await pool.query(
-      `INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING *`,
-      [name, price, stock],
+      `INSERT INTO products (name, description, base_price, stock) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [name, description, base_price, stock],
     );
 
     res.json({
