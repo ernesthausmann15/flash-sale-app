@@ -17,6 +17,7 @@ import {
   CardDescription,
   CardFooter,
   CardHeader,
+  CardProduct,
   CardTitle,
 } from "@/components/ui/card";
 
@@ -230,53 +231,50 @@ export default function FlashSaleInventoryManagerPage() {
     setPurchasingIds(new Set(inFlightIds.current));
   }, [inFlightIds.current, setPurchasingIds]);
 
-  const submitInventoryCommand = useCallback(
-    async () => {
-      const commandText = command.trim();
-      if (!commandText || commandPending) return;
+  const submitInventoryCommand = useCallback(async () => {
+    const commandText = command.trim();
+    if (!commandText || commandPending) return;
 
-      setCommandPending(true);
-      setCommandResult(null);
+    setCommandPending(true);
+    setCommandResult(null);
 
-      try {
-        // Same host as the catalog. backend/.env sets PORT=5000, so the
-        // form must not call a hardcoded port 4000.
-        const response = await fetch(`${API_BASE}/api/add-product`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ commandText }),
-        });
-        const data = (await response.json()) as AddProductResponse;
-        setCommandResult(data);
+    try {
+      // Same host as the catalog. backend/.env sets PORT=5000, so the
+      // form must not call a hardcoded port 4000.
+      const response = await fetch(`${API_BASE}/api/add-product`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commandText }),
+      });
+      const data = (await response.json()) as AddProductResponse;
+      setCommandResult(data);
 
-        if (response.ok && data.success) {
-          const fresh = await loadProducts();
-          setProducts(fresh);
-          setCatalogState("ready");
-          setCatalogError(null);
-        }
-      } catch (error: unknown) {
-        setCommandResult({
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "The command never reached the API.",
-        });
-      } finally {
-        setCommandPending(false);
+      if (response.ok && data.success) {
+        const fresh = await loadProducts();
+        setProducts(fresh);
+        setCatalogState("ready");
+        setCatalogError(null);
       }
-    },
-    [
-      commandPending,
-      command,
-      loadProducts,
-      setProducts,
-      setCatalogState,
-      setCatalogError,
-      setCommandResult,
-    ],
-  );
+    } catch (error: unknown) {
+      setCommandResult({
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "The command never reached the API.",
+      });
+    } finally {
+      setCommandPending(false);
+    }
+  }, [
+    commandPending,
+    command,
+    loadProducts,
+    setProducts,
+    setCatalogState,
+    setCatalogError,
+    setCommandResult,
+  ]);
 
   const submitFlashSalePurchase = useCallback(
     async (flashSaleId: number, quantity: number) => {
@@ -353,41 +351,46 @@ export default function FlashSaleInventoryManagerPage() {
   return (
     <main className="min-h-screen bg-background p-6 md:p-10">
       <div className="mx-auto max-w-6xl space-y-8">
-        
         {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Flash Sale Command Center</h1>
-          <p className="text-muted-foreground">Manage your live inventory and process flash sale checkouts.</p>
+          <h1 className="text-3xl font-bold tracking-tight">
+            Flash Sale Command Center
+          </h1>
+          <p className="text-muted-foreground">
+            Manage your live inventory and process flash sale checkouts.
+          </p>
         </div>
 
         {/* Grid Layout for Cards */}
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          
           {/* Card 1: Flash Sale Purchase Form */}
           <Card>
             <CardHeader>
               <CardTitle>Instant Purchase</CardTitle>
-              <CardDescription>Secure your spot in the active flash sale.</CardDescription>
+              <CardDescription>
+                Secure your spot in the active flash sale.
+              </CardDescription>
             </CardHeader>
-            <CardContent>
-              </CardContent>
+            <CardContent></CardContent>
           </Card>
 
           {/* Card 2: Inventory Command Tool */}
           <Card>
             <CardHeader>
               <CardTitle>Inventory Command</CardTitle>
-              <CardDescription>Quick-add products using natural language commands.</CardDescription>
+              <CardDescription>
+                Quick-add products using natural language commands.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <input 
-                type="text" 
-                value={command} 
-                onChange={(e) => setCommand(e.target.value)} 
+              <input
+                type="text"
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
                 placeholder="e.g., Add 50 mechanical keyboards for $99"
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
-              <Button 
+              <Button
                 onClick={() => void submitInventoryCommand()}
                 disabled={!command.trim() || commandPending}
                 aria-busy={commandPending}
@@ -397,33 +400,64 @@ export default function FlashSaleInventoryManagerPage() {
               </Button>
             </CardContent>
           </Card>
-
         </div>
 
         {/* Card 3: Product Catalog Full-Width Section */}
         <Card>
           <CardHeader>
             <CardTitle>Live Product Catalog</CardTitle>
-            <CardDescription>Currently available inventory synced from Supabase.</CardDescription>
+            <CardDescription>
+              Currently available inventory synced from Supabase.
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="border rounded-md p-4 bg-muted/20 min-h-[150px] flex items-center justify-center text-muted-foreground">
-              [Product catalog grid will display here]
-              {products.map((product) => (
-                <div key={product.id}>
-                  <h3>{product.name}</h3>
-                  <p>{product.price}</p>
-                  <p>{product.stock}</p>
-                </div>
-              ))}
-            </div>
+            {products.length === 0 ? (
+              // Keeping your centered muted style specifically for the empty state box
+              <div
+                data-slot="card-product-empty"
+                className="flex flex-col gap-2 border rounded-md p-4 bg-muted/20 min-h-[150px] items-center justify-center text-muted-foreground"
+              >
+                <p>
+                  No products found. Run a command above to add your first
+                  product!
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {products.map((product) => (
+                  <CardProduct key={product.id}>
+                    {/* Product Title and Price */}
+                    <div className="flex justify-between items-start">
+                      <h3 className="font-semibold text-base">
+                        {product.name}
+                      </h3>
+                      <span className="font-bold text-primary text-lg">
+                        ${product.price}
+                      </span>
+                    </div>
+
+                    {/* Description */}
+                    <p className="text-sm text-muted-foreground line-clamp-2">
+                      {product.name || "No description provided."}
+                    </p>
+
+                    {/* Footer with Stock and ID */}
+                    <div className="flex justify-between items-center pt-2 border-t text-xs text-muted-foreground">
+                      <span className="bg-muted px-2 py-1 rounded font-medium">
+                        Stock: {product.stock}
+                      </span>
+                      <span>ID: {product.id}</span>
+                    </div>
+                  </CardProduct>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
-
       </div>
     </main>
   );
-};
+}
 
 function PurchaseHistory({
   purchaseHistory,

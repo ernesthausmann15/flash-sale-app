@@ -91,12 +91,16 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-export {
-  Card,
-  CardHeader,
-  CardFooter,
-  CardTitle,
-  CardAction,
-  CardDescription,
-  CardContent,
+function CardProduct({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-product"
+      className={cn("flex flex-col gap-3 border rounded-lg p-4 bg-card shadow-xs transition-all hover:shadow-md",
+        className
+      )}
+      {...props}
+    />
+  );
 }
+
+export { Card, CardHeader, CardFooter, CardTitle, CardAction, CardDescription, CardContent, CardProduct };
