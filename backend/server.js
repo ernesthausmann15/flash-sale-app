@@ -97,7 +97,7 @@ app.get("/api/test-db", async (req, res) => {
 
 app.get("/api/products", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM products ORDER BY id ASC");
+    const result = await pool.query("SELECT * FROM products ORDER BY product_id ASC");
     res.json({
       success: true,
       count: result.rows.length,
@@ -114,8 +114,8 @@ app.post("/api/products", async (req, res) => {
   if (!name || typeof name !== "string" || name.trim() === "") {
     return res.status(400).json({ success: false, error: "Name is required" });
   }
-  if (!price || typeof price !== "number" || base_price <= 0) {
-    return res.status(400).json({ success: false, error: "Price is required" });
+  if (!base_price || typeof base_price !== "number" || base_price <= 0) {
+    return res.status(400).json({ success: false, error: "Base price is required" });
   }
   if (!stock || typeof stock !== "number" || stock < 0) {
     return res.status(400).json({ success: false, error: "Stock is required" });
@@ -150,7 +150,7 @@ app.post("/api/purchases", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const productQuery = `SELECT stock, base_price FROM products WHERE id = $1 FOR UPDATE`;
+    const productQuery = `SELECT stock, base_price FROM products WHERE product_id = $1 FOR UPDATE`;
     const productResult = await client.query(productQuery, [productId]);
 
     if (productResult.rows.length === 0) {
@@ -175,17 +175,27 @@ app.post("/api/purchases", async (req, res) => {
     // order row stores 120.00, not a concatenation.
     const totalPrice = Number(product.price) * quantity;
 
-    const updateStockQuery = `UPDATE products SET stock = $1 WHERE id = $2 RETURNING stock`;
+    const updateStockQuery = `UPDATE products SET stock = $1 WHERE product_id = $2 RETURNING stock`;
     const updateResult = await client.query(updateStockQuery, [
       newStock,
       productId,
     ]);
 
-    const orderQuery = `INSERT INTO orders (product_id, quantity, total_paid) VALUES ($1, $2, $3) RETURNING *`;
+    const flashSaleQuery = `SELECT discount_price FROM flash_sales WHERE flash_sale_id = $1 FOR UPDATE`;
+    const flashSaleResult = await client.query(flashSaleQuery, [productId]);
+    if (flashSaleResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, error: "Flash sale not found" });
+    }
+    const flashSale = flashSaleResult.rows[0];
+    const totalPaid = flashSale.discount_price * quantity;
+    const customerEmail = req.body.customerEmail;
+    const orderQuery = `INSERT INTO orders (flash_sale_id, customer_email, quantity, total_paid) VALUES ($1, $2, $3, $4) RETURNING *`;
     const orderResult = await client.query(orderQuery, [
-      productId,
+      flashSale.flash_sale_id,
+      customerEmail,
       quantity,
-      totalPrice,
+      totalPaid,
     ]);
 
     await client.query("COMMIT");
@@ -218,11 +228,11 @@ app.get("/api/orders", async (req, res) => {
   }
 });
 
-app.delete("/api/orders/:id", async (req, res) => {
-  const { id } = req.params;
+app.delete("/api/orders/:order_id", async (req, res) => {
+  const { order_id } = req.params;
   try {
-    const query = `DELETE FROM orders WHERE id = $1`;
-    const result = await pool.query(query, [id]);
+    const query = `DELETE FROM orders WHERE order_id = $1`;
+    const result = await pool.query(query, [order_id]);
     res.json({ success: true, message: "Order deleted successfully" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -231,7 +241,7 @@ app.delete("/api/orders/:id", async (req, res) => {
 
 app.get("/api/stats", async (req, res) => {
   try {
-    const query = `SELECT SUM(quantity) AS total_quantity, SUM(price) AS total_revenue FROM orders`;
+    const query = `SELECT SUM(quantity) AS total_quantity, SUM(total_paid) AS total_revenue FROM orders`;
     const result = await pool.query(query);
     res.json({
       success: true,
@@ -243,11 +253,11 @@ app.get("/api/stats", async (req, res) => {
   }
 });
 
-app.get("/api/stats/product/:id", async (req, res) => {
-  const { id } = req.params;
+app.get("/api/stats/flash_sale/:flash_sale_id", async (req, res) => {
+  const { flash_sale_id } = req.params;
   try {
-    const query = `SELECT SUM(quantity) AS total_quantity, SUM(price) AS total_revenue FROM orders WHERE product_id = $1`;
-    const result = await pool.query(query, [id]);
+    const query = `SELECT SUM(quantity) AS total_quantity, SUM(total_paid) AS total_revenue FROM orders WHERE flash_sale_id = $1`;
+    const result = await pool.query(query, [flash_sale_id]);
     res.json({
       success: true,
       total_quantity: result.rows[0].total_quantity,
@@ -262,14 +272,14 @@ app.get("/api/stats/product/:id", async (req, res) => {
 // the products table stores. stock is an integer because the column is INT.
 const ProductCommandSchema = z.object({
   name: z.string(),
-  price: z.number(),
+  base_price: z.number(),
   stock: z.number().int(),
 });
 
 /**
  * Natural-language inventory command.
  * Request:  { commandText: string }
- * Response: { success: true, extracted: { name, price, stock }, dbRow }
+ * Response: { success: true, extracted: { name, base_price, stock }, dbRow }
  *           or { success: false, error }
  *
  * openai 7 moved structured parsing off beta.chat and onto
@@ -313,23 +323,20 @@ app.post("/api/add-product", async (req, res) => {
     }
 
     const name = extracted.name.trim();
-    const price = extracted.price;
+    const base_price = extracted.base_price;
     const stock = extracted.stock;
-    if (!name || !Number.isFinite(price) || price <= 0 || stock < 0) {
-      return res.status(422).json({
-        success: false,
-        error: "Extracted product was incomplete.",
-      });
+    if (!name || typeof name !== "string" || name.trim() === "" || !Number.isFinite(base_price) || base_price <= 0 || !Number.isInteger(stock) || stock < 0 || typeof stock !== "number" || stock < 0) {
+      return res.status(422).json({ success: false, error: "Extracted product was incomplete." });
     }
 
     const inserted = await pool.query(
       `INSERT INTO products (name, description, base_price, stock) VALUES ($1, $2, $3, $4) RETURNING *`,
-      [name, description, base_price, stock],
+      [name, "Default description", base_price, stock],
     );
 
     res.json({
       success: true,
-      extracted: { name, price, stock },
+      extracted: { name, base_price, stock },
       dbRow: inserted.rows[0],
     });
   } catch (err) {
