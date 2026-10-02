@@ -175,10 +175,12 @@ export default function FlashSaleInventoryManagerPage() {
     setCatalogState("ready");
     setCatalogError(null);
 
-    useEffect(() => {
-      void loadProducts();
-    }, []);
   }, []);
+
+  useEffect(() => {
+    void loadProducts();
+  }, []);
+
 
   const inventoryCommand = useCallback(async (commandText: string) => {
     const response = await fetch(`${API_BASE}/api/add-product`, {
